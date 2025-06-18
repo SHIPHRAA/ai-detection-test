@@ -1,0 +1,146 @@
+services:
+  # 他と被らないようにcontainer_nameのプレフィックスにdg-platform-templateをつける
+
+  backend:
+    container_name: dg-platform-template-backend
+    hostname: backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+    ports:
+      - 8080:8080
+    depends_on:
+      mysql:
+        condition: service_started
+      test-mysql:
+        condition: service_healthy
+    command: uvicorn main:app --host=0.0.0.0 --port=8080 --reload
+    environment:
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: rm-te
+      MYSQL_DATABASE: plftmp
+      TEST_MYSQL_DATABASE: test_plftmp
+      MYSQL_PORT: 3306
+      MYSQL_HOST: mysql
+      TEST_MYSQL_HOST: test-mysql
+      ENV: local
+      JWT_SECRET: 0330b5f7945cda7b219a
+      ALLOW_ORIGINS: http://localhost:3000
+      PROJECT_ID: deepfake-dev
+      BUCKET_NAME: deepfake-dev
+      SERVICE_ACCOUNT: deepfake-backend@deepfake-dev.iam.gserviceaccount.com
+      WEB_CONCURRENCY: 8
+      FROM_MAIL: register@datagrid.co.jp
+      FE_API_URL: http://localhost:3000
+      BE_API_URL: http://localhost:8080
+      IMAGE_ESTIMATION_API_ENDPOINT: http://backend-ml-image-estimation-api:8001
+      VIDEO_ESTIMATION_API_ENDPOINT: http://backend-ml-video-estimation-api:8002
+      AUDIO_ESTIMATION_API_ENDPOINT: http://backend-ml-audio-estimation-api:8003
+      BING_API_SUBSCRIPTION_KEY: ${BING_API_SUBSCRIPTION_KEY}
+      # Clound Run上では自動で設定されるのでデプロイ時に設定する必要はない
+      GOOGLE_APPLICATION_CREDENTIALS: ./credentials/deepfake-dev.json
+
+  backend-ml-image-estimation-api:
+    container_name: dg-platform-template-backend-ml-image-estimation-api
+    hostname: backend-ml-image-estimation-api
+    image: backend-ml-image-estimation-api-image
+    build:
+      context: ./backend-ml/image-estimation-api
+      dockerfile: DockerfileNoGPU
+    shm_size: "4gb"
+    working_dir: /app
+    tty: true
+    volumes:
+      - ./backend-ml/image-estimation-api:/app
+    ports:
+      - "8001:8001"
+    environment:
+      ENV: "local"
+      IS_GPU: "false"
+      BACKEND_ENDPOINT: http://backend:8080
+    command: bash -c "export CUDA_VISIBLE_DEVICES=0 && uvicorn main:app --host 0.0.0.0 --port 8001 --reload --reload-dir ./"
+
+  backend-ml-video-estimation-api:
+    container_name: dg-platform-template-backend-ml-video-estimation-api
+    hostname: backend-ml-video-estimation-api
+    image: backend-ml-video-estimation-api-image
+    build:
+      context: ./backend-ml/video-estimation-api
+      dockerfile: DockerfileNoGPU
+    shm_size: "4gb"
+    working_dir: /app
+    tty: true
+    volumes:
+      - ./backend-ml/video-estimation-api:/app
+    ports:
+      - "8002:8002"
+    environment:
+      ENV: "local"
+      IS_GPU: "false"
+      BACKEND_ENDPOINT: http://backend:8080
+    command: bash -c "export CUDA_VISIBLE_DEVICES=0 && uvicorn main:app --host 0.0.0.0 --port 8002 --reload --reload-dir ./"
+
+  backend-ml-audio-estimation-api:
+    container_name: dg-platform-template-backend-ml-audio-estimation-api
+    hostname: backend-ml-audio-estimation-api
+    image: backend-ml-audio-estimation-api-image
+    build:
+      context: ./backend-ml/audio-estimation-api
+      dockerfile: DockerfileNoGPU
+    shm_size: "4gb"
+    working_dir: /app
+    tty: true
+    volumes:
+      - ./backend-ml/audio-estimation-api:/app
+    ports:
+      - "8003:8003"
+    environment:
+      ENV: "local"
+      IS_GPU: "false"
+      BACKEND_ENDPOINT: http://backend:8080
+    command: bash -c "export CUDA_VISIBLE_DEVICES=0 && uvicorn main:app --host 0.0.0.0 --port 8003 --reload --reload-dir ./"
+
+  mysql:
+    # M1チップ対応のために追記 ref: https://ryotarch.com/docker/no-matching-manifest-for-linux-arm64-v8-on-m1-mac/
+    container_name: dg-platform-template-mysql
+    platform: linux/x86_64
+    image: mysql:8.0
+    volumes:
+      - ./backend/docker/mysql/config/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./backend/docker/mysql/volumes/mysql:/var/lib/mysql
+    hostname: mysql
+    ports:
+      - 33306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: rm-te
+      MYSQL_DATABASE: plftmp
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: rm-te
+      TZ: "Asia/Tokyo"
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  test-mysql:
+    # M1チップ対応のために追記 ref: https://ryotarch.com/docker/no-matching-manifest-for-linux-arm64-v8-on-m1-mac/
+    container_name: dg-platform-template-test-mysql
+    platform: linux/x86_64
+    image: mysql:8.0
+    volumes:
+      - ./backend/docker/mysql/config/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./backend/docker/mysql/volumes/test_mysql:/var/lib/mysql
+    hostname: test-mysql
+    ports:
+      - 33307:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: rm-te
+      MYSQL_DATABASE: test_plftmp
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: rm-te
+      TZ: "Asia/Tokyo"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci

@@ -1,0 +1,24 @@
+name: CI BE
+
+concurrency:
+  group: ci-be-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  pull_request:
+    push:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/test-be.yaml'
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v3
+      - run: docker compose -f docker-compose.local.yml up -d
+      - run: docker exec dg-platform-template-backend black --check .
+      - run: make db-init
+      - run: docker exec dg-platform-template-backend pytest

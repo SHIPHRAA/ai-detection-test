@@ -1,0 +1,70 @@
+name: Deploy Dev Cloud Run FE
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-cloud-run-fe.yaml"
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    environment: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGE: asia-northeast1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-frontend:${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/177510137564/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-dev.iam.gserviceaccount.com
+      - uses: "google-github-actions/setup-gcloud@v1"
+      - run: gcloud auth configure-docker asia-northeast1-docker.pkg.dev --quiet
+
+      - run: docker build -t "$IMAGE" --build-arg VITE_API_BASE_URL=${{ vars.BE_API_URL }} --build-arg VITE_ENV_NAME=${{ vars.ENV_NAME }} -f ./frontend/Dockerfile .
+      - run: docker push "$IMAGE"
+
+  deploy:
+    needs: build-and-push
+    environment: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      IMAGE: asia-northeast1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-frontend:${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/177510137564/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-dev.iam.gserviceaccount.com
+      - uses: "google-github-actions/setup-gcloud@v1"
+
+      - name: deploy to Cloud Run for BE
+        run: |
+          # https://cloud.google.com/sdk/gcloud/reference/run/deploy
+          gcloud run deploy deepfake-frontend \
+            --image ${{ env.IMAGE }} \
+            --port 3000 \
+            --project deepfake-dev \
+            --region asia-northeast1 \
+            --service-account deepfake-frontend@deepfake-dev.iam.gserviceaccount.com \
+            --max-instances 50 \
+            --ingress all \
+            --allow-unauthenticated \
+            --cpu 1 \
+            --memory 2Gi\
+            --concurrency 10 \
+            --quiet \
+            --timeout 30m

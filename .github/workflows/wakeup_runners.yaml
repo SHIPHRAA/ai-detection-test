@@ -1,0 +1,32 @@
+# GitHub に登録されているセルフホストランナーは14日間接続がないと自動削除されるので定期的に起動しておく
+
+name: Wake up all self-hosted runners
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 20 * * 0' # 毎週日曜日の午前4時
+
+jobs:
+  wakeup-runners:
+    strategy:
+      matrix:
+        env: [dev, prod]
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ matrix.env }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-${{ matrix.env }}.iam.gserviceaccount.com
+      - uses: "google-github-actions/setup-gcloud@v1"
+
+      - run: gcloud compute instances start ${{ vars.RUNNER_NAME }} --zone ${{ vars.RUNNER_ZONE }}
+      - run: sleep 60
+      - run: gcloud compute instances stop ${{ vars.RUNNER_NAME }} --zone ${{ vars.RUNNER_ZONE }}

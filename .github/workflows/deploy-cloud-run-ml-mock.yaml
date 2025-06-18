@@ -1,0 +1,128 @@
+name: Deploy Cloud Run ML Mock
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backend-ml/**'
+      - '.github/workflows/deploy-cloud-run-ml-mock.yaml'
+    branches:
+      - main
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    outputs:
+      build-env: ${{ steps.set-env.outputs.build-env }}
+    steps:
+      - id: set-env
+        # TODO dev -> prod
+        run: |
+          if [ "${{ github.ref_name }}" == "main" ]; then
+            echo "build-env=dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "build-env=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-push:
+    needs: setup
+    environment: ${{ needs.setup.outputs.build-env }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGE_AUDIO_ESTIMATION: asia-northeast1-docker.pkg.dev/deepfake-${{ needs.setup.outputs.build-env }}/deepfake/deepfake-ml-mock-audio-estimation:${{ github.sha }}
+      IMAGE_IMAGE_ESTIMATION: asia-northeast1-docker.pkg.dev/deepfake-${{ needs.setup.outputs.build-env }}/deepfake/deepfake-ml-mock-image-estimation:${{ github.sha }}
+      IMAGE_VIDEO_ESTIMATION: asia-northeast1-docker.pkg.dev/deepfake-${{ needs.setup.outputs.build-env }}/deepfake/deepfake-ml-mock-video-estimation:${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-${{ needs.setup.outputs.build-env }}.iam.gserviceaccount.com
+      - uses: 'google-github-actions/setup-gcloud@v1'
+      - run: gcloud auth configure-docker asia-northeast1-docker.pkg.dev --quiet
+
+      - run: docker build -t "$IMAGE_AUDIO_ESTIMATION" -f ./backend-ml/audio-estimation-api/DockerfileNoGPU ./backend-ml/audio-estimation-api
+      - run: docker push "$IMAGE_AUDIO_ESTIMATION"
+
+      - run: docker build -t "$IMAGE_IMAGE_ESTIMATION" -f ./backend-ml/image-estimation-api/DockerfileNoGPU ./backend-ml/image-estimation-api
+      - run: docker push "$IMAGE_IMAGE_ESTIMATION"
+
+      - run: docker build -t "$IMAGE_VIDEO_ESTIMATION" -f ./backend-ml/video-estimation-api/DockerfileNoGPU  ./backend-ml/video-estimation-api
+      - run: docker push "$IMAGE_VIDEO_ESTIMATION"
+
+  deploy:
+    needs: [setup, build-and-push]
+    environment: ${{ needs.setup.outputs.build-env }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      IMAGE_AUDIO_ESTIMATION: asia-northeast1-docker.pkg.dev/deepfake-${{ needs.setup.outputs.build-env }}/deepfake/deepfake-ml-mock-audio-estimation:${{ github.sha }}
+      IMAGE_IMAGE_ESTIMATION: asia-northeast1-docker.pkg.dev/deepfake-${{ needs.setup.outputs.build-env }}/deepfake/deepfake-ml-mock-image-estimation:${{ github.sha }}
+      IMAGE_VIDEO_ESTIMATION: asia-northeast1-docker.pkg.dev/deepfake-${{ needs.setup.outputs.build-env }}/deepfake/deepfake-ml-mock-video-estimation:${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-${{ needs.setup.outputs.build-env }}.iam.gserviceaccount.com
+      - uses: 'google-github-actions/setup-gcloud@v1'
+
+      - run: |
+          gcloud run deploy deepfake-ml-mock-audio-estimation \
+            --image ${{ env.IMAGE_AUDIO_ESTIMATION }} \
+            --port 8000 \
+            --project deepfake-${{ needs.setup.outputs.build-env }} \
+            --region asia-northeast1 \
+            --service-account deepfake-backend@deepfake-${{ needs.setup.outputs.build-env }}.iam.gserviceaccount.com \
+            --max-instances 1 \
+            --cpu 1 \
+            --memory 2Gi\
+            --concurrency 30 \
+            --quiet \
+            --timeout 30m \
+            --network deepfake \
+            --subnet subnet-tokyo-01 \
+            --vpc-egress private-ranges-only
+
+      - run: |
+          gcloud run deploy deepfake-ml-mock-image-estimation \
+            --image ${{ env.IMAGE_IMAGE_ESTIMATION }} \
+            --port 8000 \
+            --project deepfake-${{ needs.setup.outputs.build-env }} \
+            --region asia-northeast1 \
+            --service-account deepfake-backend@deepfake-${{ needs.setup.outputs.build-env }}.iam.gserviceaccount.com \
+            --max-instances 1 \
+            --cpu 1 \
+            --memory 2Gi\
+            --concurrency 30 \
+            --quiet \
+            --timeout 30m \
+            --network deepfake \
+            --subnet subnet-tokyo-01 \
+            --vpc-egress private-ranges-only
+
+      - run: |
+          gcloud run deploy deepfake-ml-mock-video-estimation \
+            --image ${{ env.IMAGE_VIDEO_ESTIMATION }} \
+            --port 8000 \
+            --project deepfake-${{ needs.setup.outputs.build-env }} \
+            --region asia-northeast1 \
+            --service-account deepfake-backend@deepfake-${{ needs.setup.outputs.build-env }}.iam.gserviceaccount.com \
+            --max-instances 1 \
+            --cpu 1 \
+            --memory 2Gi\
+            --concurrency 30 \
+            --quiet \
+            --timeout 30m \
+            --network deepfake \
+            --subnet subnet-tokyo-01 \
+            --vpc-egress private-ranges-only

@@ -1,0 +1,38 @@
+name: Stop Ops Instances
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 20 * * *'
+
+jobs:
+  stop:
+    strategy:
+      matrix:
+        suffix: [dev,prod]
+    runs-on: ubuntu-24.04
+    environment: ${{ matrix.suffix }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-${{ matrix.suffix }}.iam.gserviceaccount.com
+      - uses: 'google-github-actions/setup-gcloud@v1'
+
+      - id: get-instance-info
+        run: |
+          echo "bastion-info=$(gcloud compute instances list --filter="name:bastion" --format="csv(name,zone)" | tail -n 1)" >> $GITHUB_OUTPUT
+          echo "runner-info=$(gcloud compute instances list --filter="name:runner" --format="csv(name,zone)" | tail -n 1)" >> $GITHUB_OUTPUT
+
+      - run: |
+          bastion_info="${{ steps.get-instance-info.outputs.bastion-info }}"
+          IFS=',' read -r -a bastion_info_array <<< "$bastion_info"
+          gcloud compute instances stop "${bastion_info_array[0]}" --zone "${bastion_info_array[1]}"
+          runner_info="${{ steps.get-instance-info.outputs.runner-info }}"
+          IFS=',' read -r -a runner_info_array <<< "$runner_info"
+          gcloud compute instances stop "${runner_info_array[0]}" --zone "${runner_info_array[1]}"

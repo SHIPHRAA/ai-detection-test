@@ -1,0 +1,158 @@
+name: Deploy Dev Cloud Run ML
+
+concurrency: self-hosted-${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backend-ml/**'
+      - '.github/workflows/deploy-cloud-run-ml.yaml'
+    branches:
+      - main
+
+jobs:
+  start-runner:
+    runs-on: ubuntu-24.04
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-dev.iam.gserviceaccount.com
+      - uses: "google-github-actions/setup-gcloud@v1"
+      - run: gcloud compute instances start ${{ vars.RUNNER_NAME }} --zone ${{ vars.RUNNER_ZONE }}
+
+  build-and-push:
+    needs: start-runner
+    environment: dev
+    runs-on: [self-hosted, dev]
+    timeout-minutes: 60
+    env:
+      IMAGE_AUDIO_ESTIMATION: us-central1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-ml-audio-estimation:${{ github.sha }}
+      IMAGE_IMAGE_ESTIMATION: us-central1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-ml-image-estimation:${{ github.sha }}
+      IMAGE_VIDEO_ESTIMATION: us-central1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-ml-video-estimation:${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-dev.iam.gserviceaccount.com
+      - uses: 'google-github-actions/setup-gcloud@v1'
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - run: |
+          mkdir -p /tmp/models
+          gsutil cp -r gs://deepfake-models-dev/* /tmp/models/
+          cp /tmp/models/64d5cd_checkpoint3.pth ./backend-ml/image-estimation-api/services/forgery_processor/models/checkpoints/efficientnet/
+          cp /tmp/models/Resnet50_Final.pth ./backend-ml/image-estimation-api/services/forgery_processor/models/Pytorch_Retinaface/weights/
+          cp /tmp/models/64d5cd_checkpoint3.pth ./backend-ml/video-estimation-api/services/forgery_processor/models/checkpoints/efficientnet/
+          cp /tmp/models/Resnet50_Final.pth ./backend-ml/video-estimation-api/services/forgery_processor/models/Pytorch_Retinaface/weights/
+          cp /tmp/models/face-deepfake-detection-epoch=07-val_metric=1.000.ckpt ./backend-ml/image-estimation-api/ckpt/
+          cp /tmp/models/face-deepfake-detection-epoch=07-val_metric=1.000.ckpt ./backend-ml/video-estimation-api/ckpt/
+          cp -r /tmp/models/augms1000 ./backend-ml/video-estimation-api/ckpt/
+          
+      - run: docker build -t "$IMAGE_AUDIO_ESTIMATION" -f ./backend-ml/audio-estimation-api/DockerfileGPU ./backend-ml/audio-estimation-api
+      - run: docker push "$IMAGE_AUDIO_ESTIMATION"
+
+      - run: docker build -t "$IMAGE_IMAGE_ESTIMATION" -f ./backend-ml/image-estimation-api/DockerfileGPU ./backend-ml/image-estimation-api
+      - run: docker push "$IMAGE_IMAGE_ESTIMATION"
+
+      - run: |
+          eval "$(ssh-agent -s)"
+          echo "${{ secrets.PRIVATE_KEY }}" | ssh-add -
+          docker build -t "$IMAGE_VIDEO_ESTIMATION" -f ./backend-ml/video-estimation-api/DockerfileGPU --ssh default ./backend-ml/video-estimation-api
+      - run: docker push "$IMAGE_VIDEO_ESTIMATION"
+
+      - run: |
+          docker images --format '{{.Repository}} {{.CreatedAt}} {{.ID}}' | sort -k1,1 -k2,2r -k3,3r | uniq | awk '{count[$1]++; if (count[$1] > 2) print $6}' | xargs -r docker rmi -f
+          docker builder prune -f
+
+  deploy:
+    needs: build-and-push
+    environment: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      IMAGE_AUDIO_ESTIMATION: us-central1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-ml-audio-estimation:${{ github.sha }}
+      IMAGE_IMAGE_ESTIMATION: us-central1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-ml-image-estimation:${{ github.sha }}
+      IMAGE_VIDEO_ESTIMATION: us-central1-docker.pkg.dev/deepfake-dev/deepfake/deepfake-ml-video-estimation:${{ github.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-dev.iam.gserviceaccount.com
+      - uses: 'google-github-actions/setup-gcloud@v1'
+      - run: gcloud components install -q beta
+
+      - run: |
+          gcloud beta run deploy deepfake-ml-image-estimation \
+            --image ${{ env.IMAGE_IMAGE_ESTIMATION }} \
+            --port 8000 \
+            --project deepfake-dev \
+            --region us-central1 \
+            --service-account deepfake-ml@deepfake-dev.iam.gserviceaccount.com \
+            --max-instances 1 \
+            --cpu 8 \
+            --memory 32Gi \
+            --gpu 1 \
+            --gpu-type nvidia-l4 \
+            --no-cpu-throttling \
+            --concurrency 1 \
+            --quiet \
+            --timeout 60m \
+            --execution-environment=gen2 \
+            --set-env-vars "\
+            IS_GPU=true,\
+            BACKEND_ENDPOINT=${{ vars.BE_API_URL }},\
+            ENV=dev"
+
+      - run: |
+          gcloud beta run deploy deepfake-ml-video-estimation \
+            --image ${{ env.IMAGE_VIDEO_ESTIMATION }} \
+            --port 8000 \
+            --project deepfake-dev \
+            --region us-central1 \
+            --service-account deepfake-ml@deepfake-dev.iam.gserviceaccount.com \
+            --max-instances 1 \
+            --cpu 8 \
+            --memory 32Gi \
+            --gpu 1 \
+            --gpu-type nvidia-l4 \
+            --no-cpu-throttling \
+            --concurrency 1 \
+            --quiet \
+            --timeout 60m \
+            --execution-environment=gen2 \
+            --set-env-vars "\
+            IS_GPU=true,\
+            BACKEND_ENDPOINT=${{ vars.BE_API_URL }},\
+            ENV=dev"
+
+  stop-runner:
+    needs: build-and-push
+    runs-on: ubuntu-24.04
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: google-github-actions/auth@v0.8.0
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/deepfake-github-wip/providers/deepfake-oidc-provider
+          service_account: deepfake-wip-user@deepfake-dev.iam.gserviceaccount.com
+      - uses: "google-github-actions/setup-gcloud@v1"
+
+      - run: gcloud compute instances stop ${{ vars.RUNNER_NAME }} --zone ${{ vars.RUNNER_ZONE }}

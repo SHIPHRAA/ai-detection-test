@@ -1,0 +1,10 @@
+name: _dummy
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: ${{ false }}
+    steps:
+      - run: echo "モノレポ構成で GitHub のステータスチェックを必須化するために、このようなダミージョブを用意します"
